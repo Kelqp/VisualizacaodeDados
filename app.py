@@ -7,7 +7,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------
-# CONFIGURAÇÕES DA PÁGINA (Estilo Acadêmico)
+# CONFIGURAÇÕES DA PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="SIH/SUS Academic Dashboard", 
@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização CSS adicional para um visual mais limpo e acadêmico
+# Estilização CSS adicional para um visual mais limpo
 st.markdown("""
     <style>
     .reportview-container .main .block-container{
@@ -43,7 +43,7 @@ st.markdown("""
 # ---------------------------------------------------------
 # CONEXÃO E CARREGAMENTO DE DADOS (CACHED)
 # ---------------------------------------------------------
-DB_PATH = r"C:\Users\kelvin.pessoa\Documents\Kelvin Pessoal\visualização de dados\Banco de Dados\sihrd5.duckdb"
+DB_PATH = r"caminho do db"
 
 @st.cache_resource
 def get_db_connection():
@@ -202,7 +202,7 @@ def load_geodata():
     import tempfile
     import os
     import json
-    # API Oficial do IBGE para a malha municipal do Brasil
+    # API Oficial do IBGE para a malha municipal do Brasil -> Importante
     url_ibge = "https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-100-mun.json"
     
     try:
@@ -216,7 +216,7 @@ def load_geodata():
         gdf = gpd.read_file(tmp_filepath)
         os.remove(tmp_filepath)
         
-        # O IBGE pode retornar chaves diferentes dependendo da versão da API
+        # O IBGE pode retornar chaves diferentes dependendo da versão da API -> Observação
         if 'codarea' in gdf.columns:
             gdf['cod_ibge_6'] = gdf['codarea'].astype(str).str[:6]
         elif 'id' in gdf.columns:
@@ -224,12 +224,10 @@ def load_geodata():
         elif 'CD_MUN' in gdf.columns:
             gdf['cod_ibge_6'] = gdf['CD_MUN'].astype(str).str[:6]
         else:
-            # Caso não encontre a coluna, logamos as colunas e tentamos a primeira
             print(f"Colunas do IBGE não reconhecidas: {gdf.columns}")
             gdf['cod_ibge_6'] = "000000"
         return gdf
     except Exception as e:
-        # Se ocorrer erro, criamos um GeoDataFrame vazio para não quebrar o dashboard
         st.error(f"Aviso ao buscar a malha (o mapa pode não renderizar): {e}")
         return gpd.GeoDataFrame()
 
