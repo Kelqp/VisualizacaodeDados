@@ -1,4 +1,4 @@
 import duckdb
-conn = duckdb.connect(r"C:\Users\kelvin.pessoa\Documents\Kelvin Pessoal\visualização de dados\Banco de Dados\sihrd5.duckdb")
+conn = duckdb.connect("Inclua o nome do DB ou o caminho do arquivo")
 # Imprime todas as tabelas do banco de dados
 print(conn.execute("SHOW TABLES").fetchdf()['column_name'].tolist())
