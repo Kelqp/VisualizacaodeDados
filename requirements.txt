@@ -5,3 +5,4 @@ plotly
 geopandas
 matplotlib
 requests
+xlsxwriter
