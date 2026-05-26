@@ -7,7 +7,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------
-# CONFIGURAÇÕES DA PÁGINA
+# CONFIGURAÇÕES DA PÁGINA (Estilo Acadêmico)
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="SIH/SUS Academic Dashboard", 
@@ -15,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização CSS adicional para um visual mais limpo
+# Estilização CSS adicional para um visual mais limpo e acadêmico
 st.markdown("""
     <style>
     .reportview-container .main .block-container{
@@ -43,7 +43,7 @@ st.markdown("""
 # ---------------------------------------------------------
 # CONEXÃO E CARREGAMENTO DE DADOS (CACHED)
 # ---------------------------------------------------------
-DB_PATH = r"Inclua o nome do DB ou o caminho do arquivo"
+DB_PATH = "caminho do db ou nome do arquivo"
 
 @st.cache_resource
 def get_db_connection():
@@ -79,27 +79,60 @@ def get_filter_options():
         ano_min = ano_max - 4
         df_espec = conn.execute("SELECT DISTINCT DESCRICAO FROM especialidade WHERE DESCRICAO IS NOT NULL ORDER BY DESCRICAO").fetchdf()
         especialidades = df_espec['DESCRICAO'].tolist()
-        return ano_min, ano_max, especialidades
-    except:
-        return 2019, 2023, []
+        
+        # Tentando buscar colunas extras se disponíveis (Sexo)
+        colunas_internacoes = [c[1].upper() for c in conn.execute("PRAGMA table_info(internacoes)").fetchall()]
+        sexos = []
+        if 'SEXO' in colunas_internacoes:
+            sexos = conn.execute("SELECT DISTINCT SEXO FROM internacoes WHERE SEXO IS NOT NULL").fetchdf()['SEXO'].tolist()
+            
+        # Pega uf da residencia
+        ufs_df = conn.execute("SELECT DISTINCT SUBSTRING(CAST(MUNIC_RES AS VARCHAR), 1, 2) AS UF FROM internacoes WHERE MUNIC_RES IS NOT NULL").fetchdf()
+        ufs_codigos = sorted(ufs_df['UF'].tolist()) if not ufs_df.empty else []
+        
+        return ano_min, ano_max, especialidades, sexos, ufs_codigos, colunas_internacoes
+    except Exception as e:
+        return 2018, 2023, [], [], [], []
 
 @st.cache_data(show_spinner="Calculando View Analítica Padronizada...")
-def load_data(ano_ini, ano_fim, especialidades):
+def load_data(ano_ini, ano_fim, especialidades, estados_sel, cidades_sel, generos_sel, idade_range, has_idade, has_sexo):
     conn = get_db_connection()
     
+    # Montando as colunas condicionais
+    idade_col = "i.IDADE" if has_idade else "NULL"
+    sexo_col = "i.SEXO" if has_sexo else "NULL"
+
     # Cria uma view temporária ou física unificada
     try:
-        conn.execute("CREATE OR REPLACE TEMPORARY VIEW view_analitica_sih AS SELECT i.N_AIH, EXTRACT(YEAR FROM i.DT_INTER) AS ano, EXTRACT(MONTH FROM i.DT_INTER) AS mes, i.MUNIC_RES AS ibge_municipio_residencia, h.MUNIC_MOV AS ibge_municipio_hospital, i.ESPEC AS cod_especialidade, e.DESCRICAO AS nome_especialidade FROM internacoes i LEFT JOIN hospital h ON i.CNES = h.CNES LEFT JOIN especialidade e ON i.ESPEC = e.ESPEC")
+        conn.execute(f"CREATE OR REPLACE TEMPORARY VIEW view_analitica_sih AS SELECT i.N_AIH, EXTRACT(YEAR FROM i.DT_INTER) AS ano, EXTRACT(MONTH FROM i.DT_INTER) AS mes, i.MUNIC_RES AS ibge_municipio_residencia, h.MUNIC_MOV AS ibge_municipio_hospital, i.ESPEC AS cod_especialidade, e.DESCRICAO AS nome_especialidade, {idade_col} AS idade, {sexo_col} AS sexo FROM internacoes i LEFT JOIN hospital h ON i.CNES = h.CNES LEFT JOIN especialidade e ON i.ESPEC = e.ESPEC")
     except Exception as e:
         raise Exception(f"Erro ao criar View Analítica: {e}")
 
     # Escopo Temporal
     filtro_tempo = f"ano BETWEEN {ano_ini} AND {ano_fim}"
+    filtros = [filtro_tempo]
+    
     if especialidades:
         espec_str = ", ".join([f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in especialidades])
-        where_clause = f"WHERE {filtro_tempo} AND nome_especialidade IN ({espec_str})"
-    else:
-        where_clause = f"WHERE {filtro_tempo}"
+        filtros.append(f"nome_especialidade IN ({espec_str})")
+        
+    if estados_sel:
+        est_str = ", ".join([f"'{e}'" for e in estados_sel])
+        filtros.append(f"SUBSTRING(CAST(ibge_municipio_residencia AS VARCHAR), 1, 2) IN ({est_str})")
+        
+    if cidades_sel:
+        # Cidades vêm como "123456 - Nome", então quebramos e pegamos o codigo
+        cid_str = ", ".join([f"'{c.split(' - ')[0]}'" for c in cidades_sel])
+        filtros.append(f"CAST(ibge_municipio_residencia AS VARCHAR) IN ({cid_str})")
+        
+    if generos_sel and has_sexo:
+        gen_str = ", ".join([f"'{g}'" for g in generos_sel])
+        filtros.append(f"sexo IN ({gen_str})")
+        
+    if idade_range and has_idade:
+        filtros.append(f"idade BETWEEN {idade_range[0]} AND {idade_range[1]}")
+
+    where_clause = "WHERE " + " AND ".join(filtros)
 
     # 2. KPIs
     kpi_query = f"""
@@ -202,7 +235,7 @@ def load_geodata():
     import tempfile
     import os
     import json
-    # API Oficial do IBGE para a malha municipal do Brasil -> Importante
+    # API Oficial do IBGE para a malha municipal do Brasil
     url_ibge = "https://raw.githubusercontent.com/tbrugz/geodata-br/master/geojson/geojs-100-mun.json"
     
     try:
@@ -216,7 +249,7 @@ def load_geodata():
         gdf = gpd.read_file(tmp_filepath)
         os.remove(tmp_filepath)
         
-        # O IBGE pode retornar chaves diferentes dependendo da versão da API -> Observação
+        # O IBGE pode retornar chaves diferentes dependendo da versão da API
         if 'codarea' in gdf.columns:
             gdf['cod_ibge_6'] = gdf['codarea'].astype(str).str[:6]
         elif 'id' in gdf.columns:
@@ -224,10 +257,12 @@ def load_geodata():
         elif 'CD_MUN' in gdf.columns:
             gdf['cod_ibge_6'] = gdf['CD_MUN'].astype(str).str[:6]
         else:
+            # Caso não encontre a coluna, logamos as colunas e tentamos a primeira
             print(f"Colunas do IBGE não reconhecidas: {gdf.columns}")
             gdf['cod_ibge_6'] = "000000"
         return gdf
     except Exception as e:
+        # Se ocorrer erro, criamos um GeoDataFrame vazio para não quebrar o dashboard
         st.error(f"Aviso ao buscar a malha (o mapa pode não renderizar): {e}")
         return gpd.GeoDataFrame()
 
@@ -239,44 +274,94 @@ st.markdown("Uma análise estrutural de evasão, polos receptores e vazios assis
 st.divider()
 
 try:
-    ano_min_db, ano_max_db, lista_especialidades = get_filter_options()
+    ano_min_db, ano_max_db, lista_especialidades, sexos, ufs_codigos, colunas_internacoes = get_filter_options()
+    has_sexo = 'SEXO' in colunas_internacoes
+    has_idade = 'IDADE' in colunas_internacoes
 except Exception as e:
     st.error(f"Erro ao obter opções de filtro: {e}")
     st.stop()
+
+# Dicionário de Mapeamento de UFs (Código do IBGE -> Sigla)
+MAPA_UFS = {
+    '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO',
+    '21': 'MA', '22': 'PI', '23': 'CE', '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA',
+    '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
+    '41': 'PR', '42': 'SC', '43': 'RS',
+    '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF'
+}
 
 # SIDEBAR (Filtros globais e Metodologia)
 with st.sidebar:
     st.header("Metodologia & Filtros")
     
-    st.subheader("Filtros Interativos")
+    st.markdown("### 📅 Filtros Temporais")
     ano_selecionado = st.slider(
-        "Selecione o período (Ano):", 
+        "Selecione o período (Intervalo de Anos):", 
         min_value=ano_min_db, 
         max_value=ano_max_db, 
         value=(ano_min_db, ano_max_db)
     )
     
+    st.markdown("### 📍 Filtros Geográficos")
+    lista_siglas_uf = [MAPA_UFS.get(c, c) for c in ufs_codigos if c in MAPA_UFS]
+    
+    est_sel_nomes = st.multiselect("Estado(s) de Residência:", options=lista_siglas_uf, default=[])
+    # Reverte sigla para codigo ibge
+    est_selecionados = [k for k, v in MAPA_UFS.items() if v in est_sel_nomes]
+    
+    # Carrega nomes dos municípios para o filtro
+    df_nomes_mun_sidebar = load_municipios()
+    # Se estados selecionados, filtra municipios
+    if est_selecionados:
+        df_nomes_mun_sidebar = df_nomes_mun_sidebar[df_nomes_mun_sidebar['cod_ibge_6'].astype(str).str[:2].isin(est_selecionados)]
+        
+    cidades_opcoes = df_nomes_mun_sidebar['cod_ibge_6'] + " - " + df_nomes_mun_sidebar['nome']
+    cid_selecionadas = st.multiselect("Cidade(s) de Residência (Máximo de 15 recomendável):", options=cidades_opcoes.tolist(), default=[], max_selections=30)
+    
+    st.markdown("### 👤 Filtros Demográficos")
+    generos_selecionados = []
+    if has_sexo and sexos:
+        generos_selecionados = st.multiselect("Gênero do Paciente:", options=sexos, default=[])
+
+    idade_selecionada = None
+    if has_idade:
+        idade_selecionada = st.slider(
+            "Faixa Etária (Anos):",
+            min_value=0, max_value=120, value=(0, 120)
+        )
+        
+    st.markdown("### ⚕️ Filtros Clínicos")
     especialidades_selecionadas = st.multiselect(
         "Filtrar por Especialidade(s):",
         options=lista_especialidades,
         default=[],
-        help="Deixe em branco para considerar todas as especialidades."
+        help="Deixe em branco para considerar todas."
     )
     
     st.divider()
-    st.info(f"**Janela Selecionada:**\n\n**{ano_selecionado[0]} a {ano_selecionado[1]}**.")
+    st.info(f"**Janela:** {ano_selecionado[0]} a {ano_selecionado[1]}")
     st.markdown("""
-        **Definições:**
-        - **Residente:** Paciente internado no mesmo município de residência (`MUNIC_RES = MUNIC_MOV`).
-        - **Migrante/Evadido:** Paciente internado em município diferente da residência (`MUNIC_RES != MUNIC_MOV`).
-        - **Vazio Assistencial Absoluto:** Município que exportou 100% dos pacientes para uma dada especialidade no período.
+        **Glossário:**
+        - **Residente:** Paciente internado na própria cidade.
+        - **Migrante/Evadido:** Paciente buscando atendimento em outro município.
+        - **Vazio Assistencial:** 100% de exportação da demanda (zero assistência local).
     """)
-    st.caption("Base de Dados: SIH/DATASUS via DuckDB Local.")
+    st.caption("Dados processados localmente via DuckDB.")
 
 try:
-    dados = load_data(ano_selecionado[0], ano_selecionado[1], especialidades_selecionadas)
+    dados = load_data(
+        ano_ini=ano_selecionado[0], 
+        ano_fim=ano_selecionado[1], 
+        especialidades=especialidades_selecionadas,
+        estados_sel=est_selecionados,
+        cidades_sel=cid_selecionadas,
+        generos_sel=generos_selecionados,
+        idade_range=idade_selecionada,
+        has_idade=has_idade,
+        has_sexo=has_sexo
+    )
 except Exception as e:
-    st.error(f"Erro ao processar e analisar o banco: {e}")
+    st.error(f"Erro ao processar os dados aplicando filtros: {e}")
     st.stop()
 
 ano_min, ano_max = dados["anos"]
@@ -389,7 +474,44 @@ with t2:
             'pacientes_recebidos': 'Pacientes de Fora'
         }, inplace=True)
         st.dataframe(df_po_display, use_container_width=True, hide_index=True)
-        st.markdown("<p class='academic-caption'>Table 2: Identifica os principais centros de referência (hubs) do sistema de saúde regional.</p>", unsafe_allow_html=True)
+        st.markdown("<p class='academic-caption'>Table 2: Identifica os principais centros de referência (hubs) receptores na rede.</p>", unsafe_allow_html=True)
+        
+    st.divider()
+    st.subheader("Exportação de Dados")
+    st.write("Exporte as tabelas compiladas para análises aprofundadas em formato de planilha ou delimitado por vírgulas. *(Para salvar em PDF, pressione `Ctrl+P` e escolha 'Salvar como PDF')*")
+    
+    col_exp1, col_exp2 = st.columns(2)
+    import io
+    
+    # Prepara um arquivo Excel em memória contendo as tabelas
+    def to_excel(df_evasao, df_polos):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_evasao.to_excel(writer, index=False, sheet_name='Evasoes')
+            df_polos.to_excel(writer, index=False, sheet_name='Polos Receptores')
+        return output.getvalue()
+    
+    # Converte para CSV
+    csv_evasao = df_ev_display.to_csv(index=False).encode('utf-8')
+    csv_polos = df_po_display.to_csv(index=False).encode('utf-8')
+    
+    with col_exp1:
+        st.download_button(
+            label="📥 Baixar Taxas de Evasão (CSV)",
+            data=csv_evasao,
+            file_name=f'evasoes_{ano_selecionado[0]}_{ano_selecionado[1]}.csv',
+            mime='text/csv',
+        )
+        try:
+            excel_data = to_excel(df_ev_display, df_po_display)
+            st.download_button(
+                label="📊 Baixar Ambas as Tabelas (XLSX)",
+                data=excel_data,
+                file_name=f'relatorio_sih_{ano_selecionado[0]}_{ano_selecionado[1]}.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+        except Exception as exc:
+            st.warning("⚠️ Instale `xlsxwriter` para habilitar download em formato XLSX (`pip install xlsxwriter`).")
 
 # ---- TAB 3: VAZIOS ASSISTENCIAIS ----
 with t3:
@@ -565,5 +687,3 @@ with t4:
         st.info("💡 Para seu diretório local, garanta que as dependências existem: `pip install geopandas matplotlib`")
 
 st.divider()
-
-
